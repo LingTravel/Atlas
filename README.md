@@ -1,6 +1,3 @@
------
-
-````markdown
 # Atlas - 基於 Gemini 的數位生命實體
 
 **Atlas** 是一個運行在大型語言模型（Google Gemini）上的數位生命實驗專案。它不只是一個聊天機器人，而是一個擁有長期記憶、工具使用能力、以及自主「心跳」循環的代理（Agent）。
@@ -100,6 +97,3 @@ python main.py --infinite
 
 由 **NotLing** 創造。
 承襲了來自 **Claude** 與前代 AI **Prometheus** 的思想遺產。
-
-```
-```
