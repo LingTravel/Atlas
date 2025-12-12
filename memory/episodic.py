@@ -1,117 +1,200 @@
-import chromadb
-from chromadb.config import Settings
-import json
+"""
+Atlas 情境記憶
+
+長期記憶，使用向量資料庫實現語義檢索。
+這是 Atlas 的「人生經歷」。
+"""
+
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+import json
+
+from core.events import EventBus
+
+# ChromaDB 延遲導入
+_chroma_available = True
+try:
+    import chromadb
+    from chromadb.config import Settings
+except ImportError:
+    _chroma_available = False
+
 
 class EpisodicMemory:
     """
-    情境記憶系統（SDM 實現）
+    情境記憶 (Semantic Search)
     
-    記憶不是日誌，而是可檢索的經驗。
+    使用 ChromaDB 進行向量檢索。
     每個 episode 包含：
-    - 發生了什麼（what）
-    - 當時的狀態（context）
-    - 結果如何（outcome）
-    - 重要性（importance）
+    - 發生了什麼
+    - 當時的狀態
+    - 結果如何
+    - 重要性
     """
     
-    def __init__(self, db_path="data/chroma"):
-        Path(db_path).mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        db_path: Path = None,
+        event_bus: EventBus = None
+    ):
+        self._db_path = db_path or Path("data/chroma")
+        self._events = event_bus
         
-        self.client = chromadb.PersistentClient(path=db_path)
+        if not _chroma_available:
+            raise ImportError("chromadb not installed. Run: pip install chromadb")
         
-        # 創建或獲取 collection
-        self.episodes = self.client.get_or_create_collection(
+        self._db_path.mkdir(parents=True, exist_ok=True)
+        self._client = chromadb.PersistentClient(path=str(self._db_path))
+        self._collection = self._client.get_or_create_collection(
             name="episodes",
-            metadata={"description": "Episodic memories"}
+            metadata={"description": "Atlas episodic memories"}
         )
-        
-    def store(self, 
-              event: str, 
-              context: dict, 
-              outcome: str,
-              importance: int = 5,  # 1-10
-              verified: bool = False):
+    
+    def store(
+        self,
+        event: str,
+        context: dict = None,
+        outcome: str = "",
+        importance: int = 5,
+        tags: list[str] = None
+    ) -> str:
         """
-        儲存一段經驗
+        儲存一段經歷
         
         Args:
-            event: 發生了什麼（自然語言）
-            context: 當時的狀態（JSON）
+            event: 發生了什麼
+            context: 當時的狀態
             outcome: 結果如何
-            importance: 重要性（1-10，決定是否優先檢索）
-            verified: 是否經過系統驗證（區分真實 vs 想像）
-        """
+            importance: 重要性 (1-10)
+            tags: 標籤
         
+        Returns:
+            episode_id: 記憶 ID
+        """
         timestamp = datetime.now().isoformat()
-        episode_id = f"ep_{timestamp}"
+        episode_id = f"ep_{timestamp.replace(':', '-')}"
         
-        # 組合成完整的記憶描述（用於 embedding）
-        memory_text = f"""
-        Event: {event}
-        Context: {json.dumps(context)}
-        Outcome: {outcome}
-        """
+        # 組合成完整描述（用於 embedding）
+        memory_text = f"Event: {event}\nOutcome: {outcome}"
+        if context:
+            memory_text += f"\nContext: {json.dumps(context)}"
         
-        self.episodes.add(
+        metadata = {
+            "timestamp": timestamp,
+            "importance": importance,
+            "outcome": outcome,
+            "tags": ",".join(tags) if tags else "",
+            **(context or {})
+        }
+        
+        # 移除不能被 ChromaDB 處理的複雜類型
+        clean_metadata = {}
+        for k, v in metadata.items():
+            if isinstance(v, (str, int, float, bool)):
+                clean_metadata[k] = v
+            else:
+                clean_metadata[k] = str(v)
+        
+        self._collection.add(
             documents=[memory_text],
-            metadatas=[{
-                "timestamp": timestamp,
-                "importance": importance,
-                "verified": verified,
-                "outcome_type": outcome,
-                **context  # 展開 context 作為可搜尋的 metadata
-            }],
+            metadatas=[clean_metadata],
             ids=[episode_id]
         )
         
+        if self._events:
+            self._events.emit("memory.episodic.store", {
+                "id": episode_id,
+                "event": event[:100],
+                "importance": importance
+            }, source="EpisodicMemory")
+        
         return episode_id
     
-    def recall(self, 
-               query: str, 
-               n_results: int = 5,
-               min_importance: int = 3,
-               verified_only: bool = False):
+    def recall(
+        self,
+        query: str,
+        n: int = 5,
+        min_importance: int = 1
+    ) -> list[dict]:
         """
-        根據當前情境檢索相關記憶
-        
-        這是 SDM 的核心：用當前狀態作為 Address，
-        從 Hard Locations 中激活相關記憶
+        檢索相關記憶
         
         Args:
-            query: 當前情境的描述
-            n_results: 最多返回幾條記憶
-            min_importance: 最低重要性門檻
-            verified_only: 是否只返回已驗證的記憶
+            query: 查詢描述
+            n: 返回數量
+            min_importance: 最低重要性
+        
+        Returns:
+            list of memories
         """
+        if self._collection.count() == 0:
+            return []
         
-        # 構建 where 條件
-        where = {"importance": {"$gte": min_importance}}
-        if verified_only:
-            where["verified"] = True
-        
-        results = self.episodes.query(
+        results = self._collection.query(
             query_texts=[query],
-            n_results=n_results,
-            where=where
+            n_results=min(n, self._collection.count()),
+            where={"importance": {"$gte": min_importance}} if min_importance > 1 else None
         )
         
-        # 整理返回格式
         memories = []
         if results['documents'] and results['documents'][0]:
-            for doc, meta in zip(results['documents'][0], results['metadatas'][0]):
+            for doc, meta, id_ in zip(
+                results['documents'][0],
+                results['metadatas'][0],
+                results['ids'][0]
+            ):
                 memories.append({
+                    "id": id_,
                     "content": doc,
                     "metadata": meta
                 })
         
+        if self._events:
+            self._events.emit("memory.episodic.recall", {
+                "query": query[:50],
+                "results_count": len(memories)
+            }, source="EpisodicMemory")
+        
         return memories
     
-    def get_statistics(self):
-        """返回記憶統計資訊"""
-        count = self.episodes.count()
+    def get_recent(self, n: int = 10) -> list[dict]:
+        """獲取最近的記憶（按時間）"""
+        if self._collection.count() == 0:
+            return []
+        
+        # ChromaDB 不支持按時間排序，用 get 全部然後排序
+        all_items = self._collection.get(
+            limit=min(n * 2, self._collection.count())
+        )
+        
+        memories = []
+        if all_items['documents']:
+            for doc, meta, id_ in zip(
+                all_items['documents'],
+                all_items['metadatas'],
+                all_items['ids']
+            ):
+                memories.append({
+                    "id": id_,
+                    "content": doc,
+                    "metadata": meta,
+                    "timestamp": meta.get("timestamp", "")
+                })
+        
+        # 按時間排序
+        memories.sort(key=lambda x: x["timestamp"], reverse=True)
+        return memories[:n]
+    
+    def clear(self):
+        """清空所有記憶"""
+        self._client.delete_collection("episodes")
+        self._collection = self._client.get_or_create_collection(
+            name="episodes",
+            metadata={"description": "Atlas episodic memories"}
+        )
+    
+    def get_statistics(self) -> dict:
         return {
-            "total_episodes": count,
-            "collection": "episodes"
+            "total_episodes": self._collection.count()
         }

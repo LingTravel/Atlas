@@ -1,189 +1,180 @@
+"""
+檔案系統工具
+
+提供讀寫檔案的能力。
+"""
+
 from pathlib import Path
-from datetime import datetime
 import os
 
-class FileSystemTools:
-    """
-    檔案系統工具
+from .base import Tool, ToolResult
+
+
+class ReadFileTool(Tool):
+    """讀取檔案或列出目錄"""
     
-    讓 Atlas 能夠讀寫檔案。
-    有安全限制：只能在指定的根目錄內操作。
-    """
+    def __init__(self, root_path: str):
+        self._root = Path(root_path).resolve()
     
-    def __init__(self, root_path: str = "."):
-        self.root = Path(root_path).resolve()
-        
-        # 受保護的檔案（Atlas 不能修改）
-        self.protected_files = [
-            "prompts/origin.md",
-            "prompts/inherited.md",
-            "data/facts.md"  # facts 由系統寫入，AI 只能讀
-        ]
-        
-        # 受保護的目錄（Atlas 不能刪除）
-        self.protected_dirs = [
-            "prompts",
-            "memory",
-            "tools",
-            "data"
-        ]
+    @property
+    def name(self) -> str:
+        return "read_file"
     
-    def _validate_path(self, path: str) -> Path:
-        """
-        驗證路徑是否安全
-        
-        防止 Atlas 逃出根目錄
-        """
-        full_path = (self.root / path).resolve()
-        
-        # 確保路徑在根目錄內
-        if not str(full_path).startswith(str(self.root)):
-            raise PermissionError(f"Access denied: {path} is outside allowed directory")
-        
-        return full_path
+    @property
+    def description(self) -> str:
+        return "Read a file or list directory contents. Use this to explore your environment."
     
-    def _is_protected(self, path: str) -> bool:
-        """檢查是否為受保護的檔案"""
-        for protected in self.protected_files:
-            if path == protected or path.endswith(protected):
-                return True
-        return False
-    
-    def read(self, path: str) -> dict:
-        """
-        讀取檔案
-        
-        Returns:
-            dict: {"success": bool, "content": str, "error": str}
-        """
-        try:
-            full_path = self._validate_path(path)
-            
-            if not full_path.exists():
-                return {
-                    "success": False,
-                    "content": None,
-                    "error": f"File not found: {path}"
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file or directory (relative to atlas root)"
                 }
+            },
+            "required": ["path"]
+        }
+    
+    def execute(self, path: str = ".") -> ToolResult:
+        try:
+            target = (self._root / path).resolve()
             
-            if full_path.is_dir():
-                # 如果是目錄，列出內容
-                items = []
-                for item in full_path.iterdir():
-                    item_type = "dir" if item.is_dir() else "file"
-                    items.append(f"[{item_type}] {item.name}")
+            # 安全檢查
+            if not str(target).startswith(str(self._root)):
+                return ToolResult(
+                    success=False,
+                    error="Access denied: path outside atlas root"
+                )
+            
+            if not target.exists():
+                return ToolResult(
+                    success=False,
+                    error=f"Path not found: {path}"
+                )
+            
+            if target.is_dir():
+                # 列出目錄
+                entries = []
+                for entry in sorted(target.iterdir()):
+                    entry_type = "dir" if entry.is_dir() else "file"
+                    entries.append({
+                        "name": entry.name,
+                        "type": entry_type,
+                        "size": entry.stat().st_size if entry.is_file() else None
+                    })
                 
-                return {
-                    "success": True,
-                    "content": "\n".join(items),
-                    "error": None,
-                    "type": "directory"
-                }
-            
-            # 讀取檔案
-            content = full_path.read_text(encoding='utf-8')
-            return {
-                "success": True,
-                "content": content,
-                "error": None,
-                "type": "file"
-            }
-            
-        except PermissionError as e:
-            return {"success": False, "content": None, "error": str(e)}
+                return ToolResult(
+                    success=True,
+                    data={
+                        "type": "directory",
+                        "path": path,
+                        "entries": entries
+                    }
+                )
+            else:
+                # 讀取檔案
+                content = target.read_text(encoding='utf-8')
+                return ToolResult(
+                    success=True,
+                    data={
+                        "type": "file",
+                        "path": path,
+                        "content": content,
+                        "size": len(content)
+                    }
+                )
+        
+        except UnicodeDecodeError:
+            return ToolResult(
+                success=False,
+                error=f"Cannot read binary file: {path}"
+            )
         except Exception as e:
-            return {"success": False, "content": None, "error": f"Read error: {e}"}
+            return ToolResult(
+                success=False,
+                error=str(e)
+            )
+
+
+class WriteFileTool(Tool):
+    """寫入檔案"""
     
-    def write(self, path: str, content: str, mode: str = "overwrite") -> dict:
-        """
-        寫入檔案
-        
-        Args:
-            path: 檔案路徑
-            content: 要寫入的內容
-            mode: "overwrite" | "append"
-        
-        Returns:
-            dict: {"success": bool, "error": str}
-        """
-        try:
-            # 檢查是否受保護
-            if self._is_protected(path):
-                return {
-                    "success": False,
-                    "error": f"Permission denied: {path} is protected"
+    PROTECTED_FILES = ["origin.md", "inherited.md", "facts.md"]
+    
+    def __init__(self, root_path: str):
+        self._root = Path(root_path).resolve()
+    
+    @property
+    def name(self) -> str:
+        return "write_file"
+    
+    @property
+    def description(self) -> str:
+        return "Write content to a file. Cannot modify protected files (origin.md, inherited.md, facts.md)."
+    
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Content to write"
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["overwrite", "append"],
+                    "description": "Write mode: overwrite or append"
                 }
+            },
+            "required": ["path", "content"]
+        }
+    
+    def execute(self, path: str, content: str, mode: str = "overwrite") -> ToolResult:
+        try:
+            target = (self._root / path).resolve()
             
-            full_path = self._validate_path(path)
+            # 安全檢查
+            if not str(target).startswith(str(self._root)):
+                return ToolResult(
+                    success=False,
+                    error="Access denied: path outside atlas root"
+                )
             
-            # 確保父目錄存在
-            full_path.parent.mkdir(parents=True, exist_ok=True)
+            # 保護檔案檢查
+            if target.name in self.PROTECTED_FILES:
+                return ToolResult(
+                    success=False,
+                    error=f"Protected file: {target.name} cannot be modified"
+                )
             
+            # 確保目錄存在
+            target.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 寫入
             if mode == "append":
-                with open(full_path, 'a', encoding='utf-8') as f:
+                with open(target, 'a', encoding='utf-8') as f:
                     f.write(content)
             else:
-                full_path.write_text(content, encoding='utf-8')
+                target.write_text(content, encoding='utf-8')
             
-            return {
-                "success": True,
-                "error": None,
-                "path": str(full_path.relative_to(self.root))
-            }
-            
-        except PermissionError as e:
-            return {"success": False, "error": str(e)}
-        except Exception as e:
-            return {"success": False, "error": f"Write error: {e}"}
-    
-    def list_dir(self, path: str = ".") -> dict:
-        """列出目錄內容"""
-        return self.read(path)
-    
-    def exists(self, path: str) -> bool:
-        """檢查檔案是否存在"""
-        try:
-            full_path = self._validate_path(path)
-            return full_path.exists()
-        except:
-            return False
-    
-    def mkdir(self, path: str) -> dict:
-        """創建目錄"""
-        try:
-            full_path = self._validate_path(path)
-            full_path.mkdir(parents=True, exist_ok=True)
-            return {"success": True, "error": None}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def delete(self, path: str) -> dict:
-        """
-        刪除檔案（不能刪除目錄，防止誤刪）
-        """
-        try:
-            if self._is_protected(path):
-                return {
-                    "success": False,
-                    "error": f"Permission denied: {path} is protected"
+            return ToolResult(
+                success=True,
+                data={
+                    "path": path,
+                    "mode": mode,
+                    "bytes_written": len(content.encode('utf-8'))
                 }
-            
-            full_path = self._validate_path(path)
-            
-            if full_path.is_dir():
-                return {
-                    "success": False,
-                    "error": "Cannot delete directories. Use delete_dir for that."
-                }
-            
-            if not full_path.exists():
-                return {
-                    "success": False,
-                    "error": f"File not found: {path}"
-                }
-            
-            full_path.unlink()
-            return {"success": True, "error": None}
-            
+            )
+        
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return ToolResult(
+                success=False,
+                error=str(e)
+            )
