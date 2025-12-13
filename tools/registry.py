@@ -2,11 +2,14 @@
 Atlas 工具註冊中心
 
 自動發現、註冊、管理所有工具。
+
+更新：支援異步執行
 """
 
 from typing import Optional
 from pathlib import Path
 import time
+import asyncio
 
 from .base import Tool, ToolResult
 from core.events import EventBus
@@ -24,8 +27,11 @@ class ToolRegistry:
         # 獲取所有工具定義（給 Gemini）
         definitions = registry.get_definitions()
         
-        # 執行工具
+        # 同步執行（舊方式，仍然支援）
         result = registry.execute("read_file", path="some/file.txt")
+        
+        # 異步執行（新方式，推薦）
+        result = await registry.execute_async("read_file", path="some/file.txt")
     """
     
     def __init__(self, event_bus: EventBus = None):
@@ -71,7 +77,7 @@ class ToolRegistry:
     
     def execute(self, name: str, **kwargs) -> ToolResult:
         """
-        執行工具
+        同步執行工具（保持向後兼容）
         
         Args:
             name: 工具名稱
@@ -105,6 +111,70 @@ class ToolRegistry:
         start = time.time()
         try:
             result = tool.execute(**kwargs)
+            result.execution_time = time.time() - start
+            
+            # 發送結果事件
+            if self._events:
+                event_type = "tool.success" if result.success else "tool.failure"
+                self._events.emit(event_type, {
+                    "name": name,
+                    "result": result.to_json()
+                }, source="ToolRegistry")
+            
+            return result
+            
+        except Exception as e:
+            result = ToolResult(
+                success=False,
+                error=str(e),
+                execution_time=time.time() - start
+            )
+            
+            if self._events:
+                self._events.emit("tool.failure", {
+                    "name": name,
+                    "error": str(e)
+                }, source="ToolRegistry")
+            
+            return result
+    
+    async def execute_async(self, name: str, **kwargs) -> ToolResult:
+        """
+        異步執行工具（新方法）
+        
+        Args:
+            name: 工具名稱
+            **kwargs: 工具參數
+        
+        Returns:
+            ToolResult: 執行結果
+        """
+        tool = self._tools.get(name)
+        
+        if not tool:
+            result = ToolResult(
+                success=False,
+                error=f"Unknown tool: {name}"
+            )
+            if self._events:
+                self._events.emit("tool.failure", {
+                    "name": name,
+                    "error": result.error
+                }, source="ToolRegistry")
+            return result
+        
+        # 發送調用事件
+        if self._events:
+            self._events.emit("tool.called", {
+                "name": name,
+                "args": kwargs
+            }, source="ToolRegistry")
+        
+        # 異步執行並計時
+        start = time.time()
+        try:
+            # 調用工具的異步方法
+            result = await tool.execute_async(**kwargs)
             result.execution_time = time.time() - start
             
             # 發送結果事件

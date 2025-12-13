@@ -1,0 +1,59 @@
+{
+  "drives": {
+    "curiosity": {
+      "value": 0.6140426622976,
+      "baseline": 0.5,
+      "decay_rate": 0.12,
+      "satiation_rate": 0.18
+    },
+    "fatigue": {
+      "value": 0.04,
+      "baseline": 0.1,
+      "decay_rate": 0.08,
+      "satiation_rate": 0.1
+    },
+    "anxiety": {
+      "value": 0.06170176,
+      "baseline": 0.2,
+      "decay_rate": 0.15,
+      "satiation_rate": 0.12
+    },
+    "satisfaction": {
+      "value": 0.5,
+      "baseline": 0.45,
+      "decay_rate": 0.1,
+      "satiation_rate": 0.15
+    }
+  },
+  "params": {
+    "curiosity_recovery_rate": 0.1,
+    "curiosity_recovery_threshold": 0.35,
+    "fatigue_accumulation": 0.025,
+    "exploration_reward": 0.06,
+    "creation_reward": 0.1,
+    "repeat_penalty": -0.1,
+    "satiation_threshold": 0.75,
+    "inhibition_strength": 0.5
+  },
+  "drive_history": {
+    "curiosity": [],
+    "fatigue": [],
+    "anxiety": [],
+    "satisfaction": []
+  },
+  "adjustments_log": [],
+  "recent_actions": [
+    "update_state",
+    "update_state",
+    "update_state",
+    "update_state"
+  ],
+  "extreme_counts": {
+    "curiosity": 0,
+    "fatigue": 0,
+    "anxiety": 0,
+    "satisfaction": 0
+  },
+  "ticks": 0,
+  "last_updated": "2025-12-13T23:13:01.764520"
+}

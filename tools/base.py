@@ -2,13 +2,15 @@
 Atlas 工具基類
 
 所有工具必須繼承這個類別。
-工具會自動註冊到 ToolRegistry。
+
+更新：支援同步和異步執行
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from datetime import datetime
+import asyncio
 
 
 @dataclass
@@ -26,7 +28,7 @@ class ToolResult:
             "data": self.data,
             "error": self.error,
             "execution_time": self.execution_time,
-            **self.metadata
+            "metadata": self.metadata
         }
 
 
@@ -34,7 +36,13 @@ class Tool(ABC):
     """
     工具基類
     
-    繼承此類別以創建新工具：
+    支援兩種執行模式：
+    1. 同步模式：實作 execute() 方法
+    2. 異步模式：實作 execute_async() 方法（可選）
+    
+    如果只實作 execute()，系統會自動包裝成異步。
+    
+    範例：
     
     class MyTool(Tool):
         @property
@@ -94,7 +102,7 @@ class Tool(ABC):
     @abstractmethod
     def execute(self, **kwargs) -> ToolResult:
         """
-        執行工具
+        同步執行工具
         
         Args:
             **kwargs: 參數（與 parameters 定義對應）
@@ -103,6 +111,35 @@ class Tool(ABC):
             ToolResult: 執行結果
         """
         ...
+    
+    async def execute_async(self, **kwargs) -> ToolResult:
+        """
+        異步執行工具
+        
+        預設行為：在線程池中執行同步的 execute()
+        
+        如果你的工具本身是異步的（如網路請求），
+        可以覆寫這個方法以獲得更好的性能。
+        
+        Args:
+            **kwargs: 參數
+        
+        Returns:
+            ToolResult: 執行結果
+        """
+        # 使用 asyncio.to_thread 在背景線程執行同步代碼
+        # 這樣不會阻塞主事件循環
+        return await asyncio.to_thread(self.execute, **kwargs)
+    
+    @property
+    def is_async(self) -> bool:
+        """
+        檢查工具是否有自定義的異步實作
+        
+        如果子類覆寫了 execute_async，這會返回 True
+        """
+        # 檢查 execute_async 是否被覆寫
+        return type(self).execute_async is not Tool.execute_async
     
     def to_definition(self) -> dict:
         """

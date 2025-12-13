@@ -1,19 +1,12 @@
 """
-Atlas 自適應恆定系統 (Adaptive Homeostasis)
+Atlas 自適應恆定系統 (Adaptive Homeostasis) v2.0
 
-這是 Atlas 的「內分泌系統」，現在具備自我調節能力。
-
-四種驅動力：
-- Curiosity (好奇心)
-- Fatigue (疲勞)
-- Anxiety (焦慮)
-- Satisfaction (滿足感)
-
-新功能：
-- 自動檢測驅動力異常模式
-- 自動調整參數（恢復速率、累積速率等）
-- 記錄所有調整決策
-- 安全上下限保護
+修正：數值飽和問題
+新增：
+- 邊際遞減效應
+- 飽和衰減機制
+- 競爭抑制
+- 更強的自然衰減
 """
 
 from dataclasses import dataclass, field
@@ -21,13 +14,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import json
+import math
 
 from core.events import EventBus, Event
 
 
 @dataclass
 class Drive:
-    """單一驅動力"""
+    """單一驅動力（改進版）"""
     name: str
     value: float = 0.5
     baseline: float = 0.5
@@ -36,14 +30,52 @@ class Drive:
     low_threshold: float = 0.2
     high_threshold: float = 0.8
     
+    # === 新增：飽和衰減參數 ===
+    satiation_rate: float = 0.15  # 超過 baseline 時的額外衰減
+    
     def tick(self):
-        """每心跳的自然變化 - 趨向 baseline"""
+        """每心跳的自然變化 - 改進版"""
+        # 基礎衰減：趨向 baseline
         diff = self.baseline - self.value
         self.value += diff * self.decay_rate
+        
+        # === 新增：飽和衰減 ===
+        # 當數值遠離 baseline 時，額外的「不適感」拉力
+        if self.value > self.baseline + 0.2:
+            # 高於 baseline 太多 → 額外向下拉
+            excess = self.value - (self.baseline + 0.2)
+            self.value -= excess * self.satiation_rate
+        elif self.value < self.baseline - 0.2:
+            # 低於 baseline 太多 → 額外向上拉（但較弱）
+            deficit = (self.baseline - 0.2) - self.value
+            self.value += deficit * self.satiation_rate * 0.5
+        
         self.value = max(0.0, min(1.0, self.value))
     
-    def modify(self, delta: float):
-        """外部事件影響"""
+    def modify(self, delta: float, apply_diminishing: bool = True):
+        """
+        外部事件影響（改進版）
+        
+        apply_diminishing: 是否應用邊際遞減效應
+        """
+        if apply_diminishing and delta > 0:
+            # === 邊際遞減效應 ===
+            # 越接近極端值，獎勵效果越小
+            if self.value > 0.5:
+                # 高於中點，獎勵遞減
+                # 公式：effectiveness = 1 - (value - 0.5) * 1.6
+                # 在 value=0.5 時 = 100%
+                # 在 value=0.8 時 = 52%
+                # 在 value=0.95 時 = 28%
+                effectiveness = max(0.1, 1.0 - (self.value - 0.5) * 1.6)
+                delta = delta * effectiveness
+        
+        elif apply_diminishing and delta < 0:
+            # 懲罰也有邊際遞減（已經很低時，懲罰效果減弱）
+            if self.value < 0.5:
+                effectiveness = max(0.1, 1.0 - (0.5 - self.value) * 1.6)
+                delta = delta * effectiveness
+        
         self.value = max(0.0, min(1.0, self.value + delta))
     
     def is_low(self) -> bool:
@@ -74,9 +106,13 @@ class Drive:
 
 class AdaptiveHomeostasis:
     """
-    自適應恆定系統
+    自適應恆定系統 v2.0
     
-    會自動觀察驅動力模式並調整參數。
+    改進：
+    - 邊際遞減效應
+    - 飽和衰減機制
+    - 競爭抑制
+    - 更平衡的參數
     """
     
     def __init__(
@@ -87,60 +123,70 @@ class AdaptiveHomeostasis:
         self._events = event_bus
         self._storage_path = storage_path or Path("data/homeostasis.json")
         
-        # 初始化驅動力
+        # 初始化驅動力（調整後的參數）
         self.drives = {
             "curiosity": Drive(
                 name="curiosity",
-                value=0.7,
+                value=0.6,          # 起始值略低
                 baseline=0.5,
-                decay_rate=0.08,
+                decay_rate=0.12,    # 加強衰減 (was 0.08)
+                satiation_rate=0.18, # 飽和衰減
                 low_threshold=0.25,
                 high_threshold=0.75
             ),
             "fatigue": Drive(
                 name="fatigue",
                 value=0.0,
-                baseline=0.0,
-                decay_rate=0.05,
+                baseline=0.1,       # 基準略高於 0（人總是有點累的）
+                decay_rate=0.08,    # 加強恢復 (was 0.05)
+                satiation_rate=0.1,
                 low_threshold=0.2,
-                high_threshold=0.8
+                high_threshold=0.75  # 降低閾值 (was 0.8)
             ),
             "anxiety": Drive(
                 name="anxiety",
-                value=0.3,
+                value=0.25,
                 baseline=0.2,
-                decay_rate=0.12,
+                decay_rate=0.15,    # 加強衰減 (was 0.12)
+                satiation_rate=0.12,
                 low_threshold=0.15,
-                high_threshold=0.7
+                high_threshold=0.65  # 降低閾值 (was 0.7)
             ),
             "satisfaction": Drive(
                 name="satisfaction",
                 value=0.5,
-                baseline=0.5,
-                decay_rate=0.06,
+                baseline=0.45,      # 基準略低於中點
+                decay_rate=0.10,    # 加強衰減 (was 0.06)
+                satiation_rate=0.15,
                 low_threshold=0.25,
                 high_threshold=0.75
             )
         }
         
-        # === 自適應參數 ===
+        # === 自適應參數（調整後）===
         self.params = {
-            "curiosity_recovery_rate": 0.15,
-            "curiosity_recovery_threshold": 0.4,
-            "fatigue_accumulation": 0.03,
-            "exploration_reward": 0.05,
-            "creation_reward": 0.08,
-            "repeat_penalty": -0.08
+            "curiosity_recovery_rate": 0.10,      # 降低 (was 0.15)
+            "curiosity_recovery_threshold": 0.35, # 降低 (was 0.4)
+            "fatigue_accumulation": 0.025,        # 降低 (was 0.03)
+            "exploration_reward": 0.06,           # 略增 (was 0.05)
+            "creation_reward": 0.10,              # 略增 (was 0.08)
+            "repeat_penalty": -0.10,              # 加強 (was -0.08)
+            
+            # === 新增參數 ===
+            "satiation_threshold": 0.75,  # 超過此值開始「滿足感衰減」
+            "inhibition_strength": 0.5,   # 競爭抑制強度
         }
         
         # 參數範圍（安全限制）
         self.param_limits = {
-            "curiosity_recovery_rate": (0.05, 0.5),
-            "curiosity_recovery_threshold": (0.3, 0.6),
-            "fatigue_accumulation": (0.01, 0.08),
-            "exploration_reward": (0.02, 0.15),
-            "creation_reward": (0.05, 0.20),
-            "repeat_penalty": (-0.20, -0.02)
+            "curiosity_recovery_rate": (0.05, 0.3),
+            "curiosity_recovery_threshold": (0.25, 0.5),
+            "fatigue_accumulation": (0.01, 0.05),
+            "exploration_reward": (0.03, 0.12),
+            "creation_reward": (0.05, 0.15),
+            "repeat_penalty": (-0.20, -0.05),
+            "satiation_threshold": (0.65, 0.85),
+            "inhibition_strength": (0.3, 0.7),
         }
         
         # === 驅動力歷史追蹤 ===
@@ -162,6 +208,14 @@ class AdaptiveHomeostasis:
         # 心跳計數
         self._ticks = 0
         
+        # === 新增：連續極端值計數 ===
+        self._extreme_counts = {
+            "curiosity": 0,
+            "fatigue": 0,
+            "anxiety": 0,
+            "satisfaction": 0
+        }
+        
         self._load()
         
         # 註冊事件監聽
@@ -178,53 +232,166 @@ class AdaptiveHomeostasis:
             self.drive_history[name].append(drive.value)
             if len(self.drive_history[name]) > self.history_size:
                 self.drive_history[name].pop(0)
+            
+            # === 追蹤極端值 ===
+            if drive.value >= 0.95 or drive.value <= 0.05:
+                self._extreme_counts[name] += 1
+            else:
+                self._extreme_counts[name] = 0
         
-        # === 自適應調整（每 5 個心跳檢查一次）===
-        if self._ticks % 5 == 0:
-            self._self_adjust()
+        # === 強制修正：連續極端值時的緊急調節 ===
+        self._emergency_regulation()
+        
+        # === 競爭抑制 ===
+        self._apply_inhibition()
         
         # 自然衰變
         for drive in self.drives.values():
             drive.tick()
         
         # 疲勞累積（使用自適應參數）
-        self.drives["fatigue"].modify(self.params["fatigue_accumulation"])
+        self.drives["fatigue"].modify(
+            self.params["fatigue_accumulation"],
+            apply_diminishing=True
+        )
         
-        # === 好奇心自動恢復（使用自適應參數）===
+        # === 好奇心自動恢復（改進版）===
         curiosity = self.drives["curiosity"]
         threshold = self.params["curiosity_recovery_threshold"]
         rate = self.params["curiosity_recovery_rate"]
         
+        # 只在低於閾值時恢復，且應用邊際遞減
         if curiosity.value < threshold:
             gap = threshold - curiosity.value
             recovery = gap * rate
-            curiosity.modify(recovery)
+            curiosity.modify(recovery, apply_diminishing=False)  # 恢復不用遞減
         
-        if curiosity.value < curiosity.baseline:
-            curiosity.modify(0.02)
-        # ==========================================
+        # === 移除這個！這是造成持續累加的元兇 ===
+        # if curiosity.value < curiosity.baseline:
+        #     curiosity.modify(0.02)
+        
+        # === 自適應調整（每 5 個心跳檢查一次）===
+        if self._ticks % 5 == 0:
+            self._self_adjust()
         
         self._check_critical()
         self._save()
     
+    def _emergency_regulation(self):
+        """
+        緊急調節：當驅動力卡在極端值時強制修正
+        """
+        for name, count in self._extreme_counts.items():
+            if count >= 3:  # 連續 3 個心跳卡在極端值
+                drive = self.drives[name]
+                
+                if drive.value >= 0.95:
+                    # 強制下拉
+                    old_value = drive.value
+                    drive.value = 0.75
+                    
+                    print(f"\n⚠️ [Emergency] {name} stuck at {old_value:.2f}, "
+                          f"forced to {drive.value:.2f}")
+                    
+                    if self._events:
+                        self._events.emit("homeostasis.emergency", {
+                            "drive": name,
+                            "old_value": old_value,
+                            "new_value": drive.value,
+                            "reason": "stuck_high"
+                        }, source="AdaptiveHomeostasis")
+                
+                elif drive.value <= 0.05:
+                    # 強制上推
+                    old_value = drive.value
+                    drive.value = 0.25
+                    
+                    print(f"\n⚠️ [Emergency] {name} stuck at {old_value:.2f}, "
+                          f"forced to {drive.value:.2f}")
+                
+                self._extreme_counts[name] = 0
+    
+    def _apply_inhibition(self):
+        """
+        競爭抑制：驅動力之間的相互影響
+        
+        生物學原理：
+        - 疲勞高 → 好奇心獎勵減半
+        - 焦慮高 → 滿意度獎勵減半
+        - 好奇心極高 → 輕微增加焦慮
+        """
+        strength = self.params["inhibition_strength"]
+        
+        # 疲勞抑制好奇心
+        if self.drives["fatigue"].value > 0.6:
+            inhibit = (self.drives["fatigue"].value - 0.6) * strength * 0.1
+            self.drives["curiosity"].modify(-inhibit, apply_diminishing=False)
+        
+        # 焦慮抑制滿意度
+        if self.drives["anxiety"].value > 0.5:
+            inhibit = (self.drives["anxiety"].value - 0.5) * strength * 0.08
+            self.drives["satisfaction"].modify(-inhibit, apply_diminishing=False)
+        
+        # 極高好奇心產生輕微焦慮（「太興奮」）
+        if self.drives["curiosity"].value > 0.85:
+            excess = (self.drives["curiosity"].value - 0.85) * 0.15
+            self.drives["anxiety"].modify(excess, apply_diminishing=False)
+    
     def _self_adjust(self):
         """
-        自我調整參數
+        自我調整參數（改進版）
         
-        檢測驅動力模式並自動優化參數。
+        新增：檢測數值飽和問題
         """
         adjustments_made = []
         
-        # === 檢測好奇心長期過低 ===
+        # === 檢測好奇心持續過高（新增）===
+        if len(self.drive_history["curiosity"]) >= 8:
+            recent = self.drive_history["curiosity"][-8:]
+            avg = sum(recent) / len(recent)
+            
+            if avg > 0.85:
+                # 好奇心持續過高，增強飽和衰減
+                old_satiation = self.drives["curiosity"].satiation_rate
+                new_satiation = min(old_satiation + 0.03, 0.25)
+                
+                if new_satiation != old_satiation:
+                    self.drives["curiosity"].satiation_rate = new_satiation
+                    adjustments_made.append({
+                        "param": "curiosity.satiation_rate",
+                        "old": old_satiation,
+                        "new": new_satiation,
+                        "reason": f"Curiosity stuck high (avg={avg:.2f})"
+                    })
+        
+        # === 檢測滿意度持續過高（新增）===
+        if len(self.drive_history["satisfaction"]) >= 8:
+            recent = self.drive_history["satisfaction"][-8:]
+            avg = sum(recent) / len(recent)
+            
+            if avg > 0.85:
+                old_satiation = self.drives["satisfaction"].satiation_rate
+                new_satiation = min(old_satiation + 0.03, 0.25)
+                
+                if new_satiation != old_satiation:
+                    self.drives["satisfaction"].satiation_rate = new_satiation
+                    adjustments_made.append({
+                        "param": "satisfaction.satiation_rate",
+                        "old": old_satiation,
+                        "new": new_satiation,
+                        "reason": f"Satisfaction stuck high (avg={avg:.2f})"
+                    })
+        
+        # === 原有的調整邏輯 ===
+        # 檢測好奇心長期過低
         if len(self.drive_history["curiosity"]) >= 10:
             recent = self.drive_history["curiosity"][-10:]
             avg = sum(recent) / len(recent)
             
-            if avg < 0.15:
-                # 好奇心太低，提高恢復速率
+            if avg < 0.2:
                 old_rate = self.params["curiosity_recovery_rate"]
                 new_rate = min(
-                    old_rate + 0.05,
+                    old_rate + 0.03,
                     self.param_limits["curiosity_recovery_rate"][1]
                 )
                 
@@ -236,30 +403,12 @@ class AdaptiveHomeostasis:
                         "new": new_rate,
                         "reason": f"Curiosity too low (avg={avg:.2f})"
                     })
-            
-            elif avg > 0.75:
-                # 好奇心過高，可以降低恢復速率
-                old_rate = self.params["curiosity_recovery_rate"]
-                new_rate = max(
-                    old_rate - 0.02,
-                    self.param_limits["curiosity_recovery_rate"][0]
-                )
-                
-                if new_rate != old_rate:
-                    self.params["curiosity_recovery_rate"] = new_rate
-                    adjustments_made.append({
-                        "param": "curiosity_recovery_rate",
-                        "old": old_rate,
-                        "new": new_rate,
-                        "reason": f"Curiosity high (avg={avg:.2f})"
-                    })
         
-        # === 檢測疲勞累積過快 ===
+        # 檢測疲勞累積過快
         if len(self.drive_history["fatigue"]) >= 5:
             recent = self.drive_history["fatigue"][-5:]
             
-            # 如果 5 次心跳疲勞從低到高
-            if recent[0] < 0.3 and recent[-1] > 0.75:
+            if recent[0] < 0.3 and recent[-1] > 0.70:
                 old_accum = self.params["fatigue_accumulation"]
                 new_accum = max(
                     old_accum * 0.8,
@@ -275,13 +424,12 @@ class AdaptiveHomeostasis:
                         "reason": "Fatigue accumulating too fast"
                     })
         
-        # === 檢測滿意度長期過低 ===
+        # 檢測滿意度長期過低
         if len(self.drive_history["satisfaction"]) >= 10:
             recent = self.drive_history["satisfaction"][-10:]
             avg = sum(recent) / len(recent)
             
-            if avg < 0.3:
-                # 提高創造獎勵
+            if avg < 0.25:
                 old_reward = self.params["creation_reward"]
                 new_reward = min(
                     old_reward + 0.02,
@@ -306,7 +454,10 @@ class AdaptiveHomeostasis:
             }
             self.adjustments_log.append(log_entry)
             
-            # 打印調整
+            # 只保留最近 50 條記錄
+            if len(self.adjustments_log) > 50:
+                self.adjustments_log = self.adjustments_log[-50:]
+            
             print("\n" + "="*60)
             print("🔧 SELF-ADJUSTMENT TRIGGERED")
             print("="*60)
@@ -315,7 +466,6 @@ class AdaptiveHomeostasis:
                 print(f"  Reason: {adj['reason']}")
             print("="*60 + "\n")
             
-            # 發送事件
             if self._events:
                 self._events.emit("homeostasis.adjusted", log_entry, source="AdaptiveHomeostasis")
     
@@ -358,7 +508,6 @@ class AdaptiveHomeostasis:
         if len(self._recent_actions) > self._action_history_size:
             self._recent_actions.pop(0)
         
-        # 從 context 獲取計數
         count = 0
         if context and isinstance(context, dict):
             count = context.get("read_count", 0)
@@ -369,56 +518,60 @@ class AdaptiveHomeostasis:
         
         diversity = self.get_diversity()
         if diversity < 0.3:
-            self.drives["curiosity"].modify(-0.03)
+            self.drives["curiosity"].modify(-0.05)  # 加強懲罰
         
         self._save()
     
     def _process_action(self, action: str, success: bool, count: int = 0):
-        """根據具體行為調整驅動力（使用自適應參數）"""
+        """根據具體行為調整驅動力（使用邊際遞減）"""
+        
+        # === 計算抑制因子 ===
+        fatigue_inhibit = 1.0
+        if self.drives["fatigue"].value > 0.5:
+            # 疲勞時獎勵減半
+            fatigue_inhibit = 1.0 - (self.drives["fatigue"].value - 0.5) * self.params["inhibition_strength"]
+            fatigue_inhibit = max(0.3, fatigue_inhibit)
         
         # 探索類行為
         if action in ["browse", "read_file", "recall", "search"]:
             if success:
                 if count >= 3:
-                    # 嚴重重複
                     penalty = self.params["repeat_penalty"] * 1.5
                     self.drives["curiosity"].modify(penalty)
                     self.drives["satisfaction"].modify(penalty * 0.5)
-                    self.drives["anxiety"].modify(0.05)
+                    self.drives["anxiety"].modify(0.06)
                 elif count >= 2:
-                    # 重複
                     penalty = self.params["repeat_penalty"]
                     self.drives["curiosity"].modify(penalty)
                     self.drives["satisfaction"].modify(penalty * 0.3)
                 elif count == 1:
-                    # 第二次
-                    self.drives["curiosity"].modify(-0.03)
+                    self.drives["curiosity"].modify(-0.04)
                 else:
-                    # 首次探索 → 獎勵（使用自適應參數）
-                    reward = self.params["exploration_reward"]
-                    self.drives["curiosity"].modify(reward)
-                    self.drives["satisfaction"].modify(reward * 0.6)
+                    # 首次探索（應用抑制因子和邊際遞減）
+                    reward = self.params["exploration_reward"] * fatigue_inhibit
+                    self.drives["curiosity"].modify(reward)  # 自動應用邊際遞減
+                    self.drives["satisfaction"].modify(reward * 0.5)
             
             self.drives["fatigue"].modify(0.02)
         
-        # 創造類行為 → 獎勵（使用自適應參數）
+        # 創造類行為
         elif action in ["write_file", "execute_python", "remember"]:
             if success:
-                reward = self.params["creation_reward"]
+                reward = self.params["creation_reward"] * fatigue_inhibit
                 self.drives["satisfaction"].modify(reward)
-                self.drives["curiosity"].modify(reward)
+                self.drives["curiosity"].modify(reward * 0.3)  # 降低對好奇心的影響
             self.drives["fatigue"].modify(0.03)
         
         # 反思類行為
         elif action in ["learn_rule", "update_state"]:
-            self.drives["anxiety"].modify(-0.08)
+            self.drives["anxiety"].modify(-0.10)
             self.drives["curiosity"].modify(0.02)
             self.drives["fatigue"].modify(0.01)
         
         # 失敗處理
         if not success:
-            self.drives["anxiety"].modify(0.05)
-            self.drives["satisfaction"].modify(-0.03)
+            self.drives["anxiety"].modify(0.06)
+            self.drives["satisfaction"].modify(-0.04)
     
     def _on_tool_success(self, event: Event):
         """事件監聽：工具成功"""
@@ -452,11 +605,11 @@ class AdaptiveHomeostasis:
         anxiety = self.drives["anxiety"].value
         satisfaction = self.drives["satisfaction"].value
         
-        if fatigue > 0.85:
+        if fatigue > 0.80:
             return "rest"
-        if anxiety > 0.7:
+        if anxiety > 0.65:
             return "reflect"
-        if curiosity > 0.7:
+        if curiosity > 0.7 and fatigue < 0.5:
             return "explore"
         if curiosity < 0.3:
             return "seek_novelty"
@@ -489,7 +642,6 @@ class AdaptiveHomeostasis:
         lines.append(f"**Behavioral Diversity**: {diversity:.0%}")
         lines.append(f"**Suggested Mode**: {mode}")
         
-        # 顯示最近調整
         if self.adjustments_log and len(self.adjustments_log) > 0:
             last_adj = self.adjustments_log[-1]
             if self._ticks - last_adj.get("heartbeat", 0) < 10:
@@ -521,15 +673,15 @@ class AdaptiveHomeostasis:
     
     def rest(self):
         """休息效果"""
-        self.drives["fatigue"].modify(-0.5)
-        self.drives["anxiety"].modify(-0.2)
-        self.drives["curiosity"].modify(0.2)
-        self.drives["satisfaction"].modify(0.1)
+        self.drives["fatigue"].modify(-0.5, apply_diminishing=False)
+        self.drives["anxiety"].modify(-0.2, apply_diminishing=False)
+        self.drives["curiosity"].modify(0.15, apply_diminishing=True)
+        self.drives["satisfaction"].modify(0.1, apply_diminishing=True)
         self._save()
     
     def should_dream(self) -> bool:
         """是否應該進入夢境狀態"""
-        return self.drives["fatigue"].value > 0.85
+        return self.drives["fatigue"].value > 0.80  # 降低閾值
     
     def get_drive_history(self) -> dict:
         """獲取驅動力歷史（供夢境分析用）"""
@@ -539,6 +691,17 @@ class AdaptiveHomeostasis:
         """獲取調整歷史"""
         return self.adjustments_log.copy()
     
+    def reset_to_baseline(self):
+        """
+        重置所有驅動力到 baseline（調試用）
+        """
+        for name, drive in self.drives.items():
+            drive.value = drive.baseline
+        
+        self._extreme_counts = {name: 0 for name in self.drives}
+        print("🔄 All drives reset to baseline")
+        self._save()
+    
     def _save(self):
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -547,7 +710,8 @@ class AdaptiveHomeostasis:
                 name: {
                     "value": drive.value,
                     "baseline": drive.baseline,
-                    "decay_rate": drive.decay_rate
+                    "decay_rate": drive.decay_rate,
+                    "satiation_rate": drive.satiation_rate,
                 }
                 for name, drive in self.drives.items()
             },
@@ -555,6 +719,7 @@ class AdaptiveHomeostasis:
             "drive_history": self.drive_history,
             "adjustments_log": self.adjustments_log,
             "recent_actions": self._recent_actions,
+            "extreme_counts": self._extreme_counts,
             "ticks": self._ticks,
             "last_updated": datetime.now().isoformat()
         }
@@ -570,21 +735,25 @@ class AdaptiveHomeostasis:
             with open(self._storage_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # 載入驅動力
             for name, info in data.get("drives", {}).items():
                 if name in self.drives:
                     self.drives[name].value = info.get("value", self.drives[name].value)
+                    if "satiation_rate" in info:
+                        self.drives[name].satiation_rate = info["satiation_rate"]
             
-            # 載入參數
             if "params" in data:
-                self.params.update(data["params"])
+                for key, value in data["params"].items():
+                    if key in self.params:
+                        self.params[key] = value
             
-            # 載入歷史
             if "drive_history" in data:
                 self.drive_history = data["drive_history"]
             
             if "adjustments_log" in data:
                 self.adjustments_log = data["adjustments_log"]
+            
+            if "extreme_counts" in data:
+                self._extreme_counts = data["extreme_counts"]
             
             self._recent_actions = data.get("recent_actions", [])
             self._ticks = data.get("ticks", 0)

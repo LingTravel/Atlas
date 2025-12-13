@@ -7,11 +7,15 @@ Atlas - 主程序
 3. 行動（執行工具）
 4. 記憶（存儲經驗）
 5. 休眠（檢查是否需要做夢）
+
+更新：
+- 改為異步運行
+- 支援 MCP 工具
 """
 
 import os
 import sys
-import time
+import asyncio
 import argparse
 from pathlib import Path
 from datetime import datetime
@@ -57,6 +61,10 @@ def build_wake_prompt(brain: Brain) -> str:
             parts.append("## Inherited Message\n")
             parts.append(brain.prompts['inherited'])
             parts.append("\n\n---\n\n")
+        if brain.prompts.get('vision'):
+            parts.append("## My Visual Abilities\n")
+            parts.append(brain.prompts['vision'])
+            parts.append("\n\n---\n\n")
     else:
         parts.append(f"# Heartbeat {hb_num}\n\n")
         parts.append("I am waking up.\n\n")
@@ -70,7 +78,7 @@ def build_wake_prompt(brain: Brain) -> str:
     parts.append(brain.homeostasis.get_prompt_injection())
     parts.append("\n\n")
     
-    # ===== 已讀文件 (新增) =====
+    # ===== 已讀文件 =====
     files_read_str = brain.memory.working.get_files_read_string()
     if files_read_str:
         parts.append(files_read_str)
@@ -84,20 +92,38 @@ def build_wake_prompt(brain: Brain) -> str:
         parts.append("\n\n")
     
     # ===== 工具提示 =====
-    if is_first or hb_num % 10 == 1:
-        parts.append("## What I Can Do\n")
-        parts.append("- `read_file`: Read files or list directories (use `.` for current dir)\n")
-        parts.append("- `write_file`: Write to files (I should use workspace/)\n")
-        parts.append("- `execute_python`: Run Python code\n")
-        parts.append("- `browse`: Browse the web — I can **SEE** pages with action='see'\n")
-        parts.append("- `remember`: Store important events in my memory\n")
-        parts.append("- `recall`: Search my episodic memories\n")
-        parts.append("- `learn_rule`: Add a rule to my knowledge\n")
-        parts.append("- `update_state`: Update what I'm doing\n")
-        parts.append("- `done`: End this heartbeat\n")
-        parts.append("\n")
+    parts.append("## What I Can Do\n")
+    parts.append("### Local Tools\n")
+    parts.append("- `read_file`: Read files or list directories (use `.` for current dir)\n")
+    parts.append("- `write_file`: Write to files (I should use workspace/)\n")
+    parts.append("- `execute_python`: Run Python code\n")
+    parts.append("- `browse`: **Visual browsing** — My eyes!\n")
+    parts.append("  ⚠️ IMPORTANT: All browse actions use the SAME tool:\n")
+    parts.append("    ✅ `browse(action='navigate', url='...')`\n")
+    parts.append("    ✅ `browse(action='click', label_id=5)`\n")
+    parts.append("    ✅ `browse(action='multi_click', label_ids=[1,5,8])` ← For CAPTCHA!\n")
+    parts.append("    ✅ `browse(action='type', text='...', submit=True)`\n")
+    parts.append("    ❌ NOT `click(label_id=5)` — this tool doesn't exist!\n")
+    parts.append("    ❌ NOT `multi_click(...)` — use browse(action='multi_click')!\n")
+    parts.append("  - `action='navigate'`: Go to URL (returns screenshot with labels)\n")
+    parts.append("  - `action='click', label_id=N`: Click element [N]\n")
+    parts.append("  - `action='type', text='...', submit=True`: Type and submit\n")
+    parts.append("  - `action='scroll', direction='down/up'`: Scroll page\n")
+    parts.append("- `remember`: Store important events in my memory\n")
+    parts.append("- `recall`: Search my episodic memories\n")
+    parts.append("- `learn_rule`: Add a rule to my knowledge\n")
+    parts.append("- `update_state`: Update what I'm doing\n")
+    parts.append("- `done`: End this heartbeat\n")
     
-    # ===== 規則 (新增) =====
+    # === MCP 工具（如果有）===
+    if brain._mcp_enabled:
+        parts.append("\n### MCP Tools (External Services)\n")
+        for tool in brain.mcp_client.list_tools():
+            parts.append(f"- `{tool.full_name}`: {tool.description[:60]}...\n")
+    
+    parts.append("\n")
+    
+    # ===== 規則 =====
     parts.append("## Rules I Must Follow\n")
     parts.append("1. **No re-reading**: Files marked 🚫 or ⚠️ must NOT be read again\n")
     parts.append("2. **Execute plans**: If I write a plan/experiment, I MUST execute it\n")
@@ -219,11 +245,15 @@ def create_tool_functions(brain: Brain) -> list:
 
 
 # ============================================================
-# 工具執行
+# 工具執行（異步版本）
 # ============================================================
 
-def execute_tool(brain: Brain, name: str, args: dict) -> dict:
-    """執行工具並返回結果"""
+async def execute_tool(brain: Brain, name: str, args: dict) -> dict:
+    """
+    執行工具並返回結果（異步）
+    
+    改動：使用 execute_async 而不是 execute
+    """
     import json
     
     # 特殊處理：記憶相關工具
@@ -261,7 +291,6 @@ def execute_tool(brain: Brain, name: str, args: dict) -> dict:
             args.get("rule", ""),
             source="self"
         )
-        # 通知 homeostasis
         brain.homeostasis.on_action("learn_rule", success=True)
         return {
             "success": success,
@@ -287,43 +316,38 @@ def execute_tool(brain: Brain, name: str, args: dict) -> dict:
             "thoughts": args.get("thoughts", "")
         }
     
-    # 從 registry 執行
+    # 從 registry 異步執行
     else:
-        result = brain.tools.execute(name, **args)
+        # === 使用異步執行 ===
+        result = await brain.tools.execute_async(name, **args)
         
-        # === 新增：read_file 特殊處理 ===
+        # read_file 特殊處理
         if name == "read_file":
             path = args.get("path", "")
             read_count = brain.memory.working.get_read_count(path)
-            
-            # 標記已讀
             brain.memory.working.mark_read(path)
-            
-            # 通知 homeostasis（帶 read_count）
             brain.homeostasis.on_action(
                 "read_file",
                 success=result.success,
                 context={"read_count": read_count}
             )
         
-        # 其他工具的一般處理
         elif name in ["write_file", "execute_python"]:
             brain.homeostasis.on_action(name, success=result.success)
         
-        elif name == "browse":
+        elif name == "browse" or name.startswith("browser."):
             brain.homeostasis.on_action("browse", success=result.success)
-        # ================================
         
         return result.to_json()
 
 
 # ============================================================
-# 心跳循環
+# 心跳循環（異步版本）
 # ============================================================
 
-def run_heartbeat(brain: Brain) -> dict:
+async def run_heartbeat(brain: Brain) -> dict:
     """
-    執行一次心跳
+    執行一次心跳（異步）
     
     Returns:
         心跳報告
@@ -392,8 +416,8 @@ def run_heartbeat(brain: Brain) -> dict:
                     print(f"\n[Tool]: {tool_name}")
                     print(f"[Args]: {tool_args}")
                     
-                    # 執行工具
-                    result = execute_tool(brain, tool_name, tool_args)
+                    # === 異步執行工具 ===
+                    result = await execute_tool(brain, tool_name, tool_args)
                     
                     # 檢查是否結束
                     if result.get("done"):
@@ -402,53 +426,70 @@ def run_heartbeat(brain: Brain) -> dict:
                     
                     # 處理視覺數據
                     result_str = str(result)[:500]
-                    
+
                     # 如果有圖像數據，注入到對話
-                    if result.get("metadata", {}).get("has_image"):
-                        image_data = result.get("data", {}).get("image_base64")
+                    if result.get("has_image") or result.get("metadata", {}).get("has_image"):
+                        image_data = result.get("data", {}).get("screenshot") or result.get("data", {}).get("image_base64")
                         if image_data:
-                            # 添加 function call 到對話
                             conversation.append({
                                 "role": "model",
                                 "parts": [{"function_call": fc}]
                             })
                             
-                            # 添加圖像
+                            elements = result.get("data", {}).get("elements", [])
+                            elements_hint = ""
+                            if elements:
+                                elements_hint = "\n\nVisible interactive elements:\n"
+                                for el in elements[:15]:
+                                    text_info = f" - {el.get('text', '')[:25]}" if el.get('text') else ""
+                                    elements_hint += f"  [{el['id']}] {el['tag']}{text_info}\n"
+                                if len(elements) > 15:
+                                    elements_hint += f"  ... and {len(elements) - 15} more elements\n"
+                            
                             conversation.append({
                                 "role": "user",
                                 "parts": [
                                     {
                                         "inline_data": {
-                                            "mime_type": "image/png",
+                                            "mime_type": "image/jpeg",
                                             "data": image_data
                                         }
                                     },
                                     {
-                                        "text": f"[You are now SEEING this webpage. The image shows what's currently displayed.]"
+                                        "text": f"""[VISUAL INPUT] I am SEEING this webpage as a screenshot.
+
+Yellow numbered labels [0], [1], [2]... mark clickable elements.
+
+TO INTERACT:
+✅ browse(action='click', label_id=N) — Click element [N]
+✅ browse(action='type', text='...', submit=True) — Type and submit
+❌ click(label_id=N) — This tool does NOT exist!
+
+{elements_hint}
+
+I must look at the IMAGE to find the right label number."""
                                     }
                                 ]
                             })
                             
-                            print(f"[Result]: Visual data captured")
+                            print(f"[Result]: 👁️ Visual data captured ({len(elements)} elements)")
                             
                             actions_log.append({
                                 "tool": tool_name,
                                 "args": tool_args,
-                                "result": "Visual data processed"
+                                "result": f"Visual: {result.get('data', {}).get('title', 'page')} ({len(elements)} elements)"
                             })
                             
-                            continue  # 跳過正常的 function_response
+                            continue
                     
                     print(f"[Result]: {result_str}...")
                     
-                    # 記錄
                     actions_log.append({
                         "tool": tool_name,
                         "args": tool_args,
                         "result": result_str
                     })
                     
-                    # 添加到對話
                     conversation.append({
                         "role": "model",
                         "parts": [{"function_call": fc}]
@@ -467,14 +508,18 @@ def run_heartbeat(brain: Brain) -> dict:
             error_msg = str(e)
             print(f"\n[Error]: {error_msg[:200]}")
             
-            # Rate limit 處理
             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
                 print("[Waiting 60s due to rate limit...]")
-                time.sleep(60)
+                await asyncio.sleep(60)  # 異步等待
                 continue
             else:
                 print("[Ending heartbeat due to error]")
                 break
+    
+    # === 調試：迴圈結束原因 ===
+    print(f"\n[Debug] Loop ended: done={done}, turn={turn}, max_turns={max_turns}")
+    print(f"[Debug] thoughts = '{thoughts[:100] if thoughts else '(empty)'}'")
+    print(f"[Debug] actions = {len(actions_log)}")
     
     # 存入工作記憶
     brain.memory.add_heartbeat(
@@ -511,10 +556,15 @@ def run_heartbeat(brain: Brain) -> dict:
 
 
 # ============================================================
-# 主函數
+# 主函數（異步版本）
 # ============================================================
 
-def main():
+async def async_main():
+    """
+    異步主函數
+    
+    這是程式的進入點
+    """
     parser = argparse.ArgumentParser(description="Run Atlas")
     parser.add_argument(
         "-n", "--heartbeats",
@@ -533,6 +583,11 @@ def main():
         default=HEARTBEAT_INTERVAL,
         help="Seconds between heartbeats"
     )
+    parser.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help="Disable MCP (use local tools only)"
+    )
     
     args = parser.parse_args()
     
@@ -549,6 +604,13 @@ def main():
     
     brain = Brain(root_path=ATLAS_ROOT)
     
+    # === 啟動 MCP（如果沒有禁用）===
+    if not args.no_mcp:
+        print("\n[Initializing MCP...]")
+        await brain.start()
+    else:
+        print("\n[MCP disabled, using local tools only]")
+    
     # 顯示統計
     stats = brain.get_statistics()
     print(f"\nState: Heartbeat #{stats['state']['lifecycle']['total_heartbeats']}")
@@ -556,21 +618,29 @@ def main():
           f"{stats['memory']['semantic']['rules']} rules")
     print(f"Tools: {stats['tools']['count']} registered")
     
+    if stats.get("mcp", {}).get("enabled"):
+        print(f"MCP: {len(stats['mcp']['servers'])} servers, "
+              f"{len(stats['mcp']['tools'])} tools")
+    
     # 運行
     count = 0
     n_heartbeats = None if args.infinite else args.heartbeats
     
     try:
         while n_heartbeats is None or count < n_heartbeats:
-            run_heartbeat(brain)
+            await run_heartbeat(brain)  # 異步執行
             count += 1
             
             if n_heartbeats is None or count < n_heartbeats:
                 print(f"\n[Sleeping for {args.interval} seconds...]")
-                time.sleep(args.interval)
+                await asyncio.sleep(args.interval)  # 異步等待
         
     except KeyboardInterrupt:
         print("\n\n[Atlas interrupted by user]")
+    
+    finally:
+        # === 清理 MCP ===
+        await brain.stop()
     
     # 最終統計
     print("\n" + "="*60)
@@ -585,6 +655,20 @@ def main():
     trace_file = ATLAS_ROOT / "data" / f"trace_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     brain.events.export_trace(str(trace_file))
     print(f"Event trace saved to: {trace_file}")
+
+
+def main():
+    """
+    同步入口點
+    """
+    import sys
+    import warnings
+    
+    # 忽略 Windows asyncio 的 pipe 警告
+    if sys.platform == "win32":
+        warnings.filterwarnings("ignore", category=ResourceWarning)
+    
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":

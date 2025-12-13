@@ -2,6 +2,10 @@
 Atlas 大腦
 
 整合所有子系統的主控制器。
+
+更新：
+- 加入 MCP 客戶端支援
+- 加入 async start/stop 方法
 """
 
 from pathlib import Path
@@ -19,7 +23,7 @@ from cognition.dreaming import Dreaming
 from tools.registry import ToolRegistry
 from tools.filesystem import ReadFileTool, WriteFileTool
 from tools.python_exec import PythonExecuteTool
-from tools.browser import BrowserTool
+from tools.visual_browser import VisualBrowser
 
 
 class Brain:
@@ -32,6 +36,7 @@ class Brain:
     - 記憶系統
     - 驅動力系統
     - 工具註冊
+    - MCP 客戶端（新增）
     """
     
     def __init__(self, root_path: Path):
@@ -73,17 +78,72 @@ class Brain:
         
         # 連接事件
         self._wire_events()
+        
+        # === MCP 相關（延遲初始化）===
+        self.mcp_client = None
+        self.mcp_bridge = None
+        self._mcp_enabled = False
+    
+    async def start(self):
+        """
+        啟動 Brain（異步）
+        
+        這會初始化 MCP 客戶端並連接外部服務
+        """
+        try:
+            from mcp_client.client import MCPClient
+            from mcp_client.bridge import MCPBridge
+            
+            # 初始化 MCP 客戶端
+            config_path = self.root / "config" / "mcp_servers.yaml"
+            self.mcp_client = MCPClient(config_path=config_path)
+            
+            # 嘗試啟動
+            await self.mcp_client.start()
+            
+            # 如果有連接成功的 servers
+            if self.mcp_client.connections:
+                # 創建橋接器
+                self.mcp_bridge = MCPBridge(self.mcp_client)
+                mcp_tools = self.mcp_bridge.create_wrappers()
+                
+                # 註冊 MCP 工具
+                for tool in mcp_tools:
+                    self.tools.register(tool)
+                    print(f"[Brain] Registered MCP tool: {tool.name}")
+                
+                self._mcp_enabled = True
+                print(f"[Brain] MCP enabled with {len(mcp_tools)} tools")
+            else:
+                print("[Brain] No MCP servers connected, using local tools only")
+                
+        except ImportError:
+            print("[Brain] MCP module not available, using local tools only")
+        except Exception as e:
+            print(f"[Brain] MCP initialization failed: {e}")
+            print("[Brain] Continuing with local tools only")
+    
+    async def stop(self):
+        """
+        關閉 Brain（異步）
+        
+        清理 MCP 連接
+        """
+        if self.mcp_client:
+            await self.mcp_client.stop()
+            print("[Brain] MCP client stopped")
     
     def _register_tools(self):
-        """註冊所有工具"""
+        """註冊所有內建工具"""
         self.tools.register(ReadFileTool(root_path=str(self.root)))
         self.tools.register(WriteFileTool(root_path=str(self.root)))
         self.tools.register(PythonExecuteTool(
             timeout=30,
             working_dir=str(self.root)
         ))
-        self.tools.register(BrowserTool(
-            headless=True,
+        self.tools.register(VisualBrowser(
+            headless=False,  # 可以觀察 Atlas 操作
+            humanize=True,   # 擬人化操作
             workspace=str(self.root / "workspace")
         ))
     
@@ -92,14 +152,14 @@ class Brain:
         prompts = {}
         prompts_dir = self.root / "prompts"
         
-        print(f"[Brain] Loading prompts from: {prompts_dir}")  # 調試
+        print(f"[Brain] Loading prompts from: {prompts_dir}")
         
         if prompts_dir.exists():
             for file in prompts_dir.glob("*.md"):
                 try:
                     content = file.read_text(encoding='utf-8')
                     prompts[file.stem] = content
-                    print(f"[Brain] Loaded: {file.stem} ({len(content)} chars)")  # 調試
+                    print(f"[Brain] Loaded: {file.stem} ({len(content)} chars)")
                 except Exception as e:
                     print(f"[Brain] Failed to load {file}: {e}")
         else:
@@ -126,7 +186,7 @@ class Brain:
     
     def get_statistics(self) -> dict:
         """獲取所有系統統計"""
-        return {
+        stats = {
             "state": self.state.to_dict(),
             "memory": self.memory.get_statistics(),
             "homeostasis": self.homeostasis.get_state(),
@@ -138,3 +198,15 @@ class Brain:
                 "total": len(self.events.get_trace())
             }
         }
+        
+        # 加入 MCP 狀態
+        if self._mcp_enabled:
+            stats["mcp"] = {
+                "enabled": True,
+                "servers": list(self.mcp_client.connections.keys()),
+                "tools": [t.full_name for t in self.mcp_client.list_tools()]
+            }
+        else:
+            stats["mcp"] = {"enabled": False}
+        
+        return stats
