@@ -223,8 +223,9 @@ Contributions are welcome, particularly in the areas of:
 
 ## 📄 License
 
-[MIT License](https://www.google.com/search?q=LICENSE)
+MIT License - see [LICENSE](LICENSE)
 
 -----
 
 *Created by NotLing.*
+
