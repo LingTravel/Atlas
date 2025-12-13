@@ -15,33 +15,33 @@ Atlas mimics a biological cognitive process through a central controller (`Brain
 ```mermaid
 graph TD
     subgraph External["External World"]
-        User[Observer / User]
-        Web[World Wide Web]
-        OS[Local Filesystem]
-        MCP[External MCP Tools]
+        User["Observer / User"]
+        Web["World Wide Web"]
+        OS["Local Filesystem"]
+        MCP["External MCP Tools"]
     end
 
     subgraph Core["Atlas Core (Brain)"]
-        EventBus{Event Bus}
-        State[State Manager]
+        EventBus{"Event Bus"}
+        State["State Manager"]
         
         subgraph Cognition["Cognitive Layer"]
-            Homeostasis[Homeostasis & Drives]
-            Planner[LLM Planner (Gemini 2.0)]
-            Dreaming[Dreaming & Consolidation]
+            Homeostasis["Homeostasis & Drives"]
+            Planner["LLM Planner (Gemini 2.0)"]
+            Dreaming["Dreaming & Consolidation"]
         end
         
         subgraph Memory["Memory System"]
-            WM[Working Memory]
-            EM[Episodic Memory]
-            SM[Semantic Memory]
+            WM["Working Memory"]
+            EM["Episodic Memory"]
+            SM["Semantic Memory"]
         end
         
         subgraph Motor["Motor / Tools Layer"]
-            Visual[Visual Browser]
-            Coding[Python Executor]
-            FS[File I/O]
-            MCPClient[MCP Client]
+            Visual["Visual Browser"]
+            Coding["Python Executor"]
+            FS["File I/O"]
+            MCPClient["MCP Client"]
         end
     end
 
