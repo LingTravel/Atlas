@@ -1,7 +1,0 @@
-# Atlas MCP Servers 配置
-
-servers:
-  - name: browser
-    command: python
-    args: ["-m", "atlas_browser_mcp.server"]
-    auto_start: true

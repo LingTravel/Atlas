@@ -61,15 +61,18 @@ class MemoryManager:
     def __init__(
         self,
         data_path: Path = None,
-        event_bus: EventBus = None
+        event_bus: EventBus = None,
+        homeostasis = None  # 新增
     ):
         self._data_path = data_path or Path("data")
         self._events = event_bus
+        self._homeostasis = homeostasis  # 新增
         
         # 初始化三種記憶
         self.working = WorkingMemory(
             storage_path=self._data_path / "working_memory.json",
-            event_bus=event_bus
+            event_bus=event_bus,
+            on_expire=self._handle_memory_expire  # 新增：傳入回調
         )
         
         self.episodic = EpisodicMemory(

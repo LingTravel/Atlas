@@ -33,7 +33,7 @@ class VisualBrowser(Tool):
     
     # === 配置常量 ===
     VIEWPORT = {"width": 1280, "height": 800}
-    SCREENSHOT_QUALITY = 75  # JPEG 品質
+    SCREENSHOT_QUALITY = 100  # JPEG 品質
     
     def __init__(
         self, 
@@ -81,6 +81,10 @@ Actions:
 - scroll: Scroll the page
 - close: Close browser
 
+Tab management:
+- list_tabs: See all open tabs
+- switch_tab: Switch to tab by index (usually auto-switches to new tabs)
+
 Example workflow:
 1. navigate to a URL
 2. Look at the screenshot, find the search box labeled [3]
@@ -101,7 +105,7 @@ For CAPTCHA (select all squares with X):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["navigate", "observe", "click", "multi_click", "type", "scroll", "close"],  # 新增 multi_click
+                    "enum": ["navigate", "observe", "click", "multi_click", "type", "scroll", "list_tabs", "switch_tab", "close"],
                     "description": "What action to perform"
                 },
                 "url": {
@@ -129,7 +133,11 @@ For CAPTCHA (select all squares with X):
                     "type": "string",
                     "enum": ["up", "down"],
                     "description": "Scroll direction"
-                }
+                },
+                "tab_index": {
+                    "type": "integer", 
+                    "description": "Tab index for switch_tab action"
+                },
             },
             "required": ["action"]
         }
@@ -149,7 +157,9 @@ For CAPTCHA (select all squares with X):
             "multi_click": self._multi_click,  # === 新增 ===
             "type": self._type,
             "scroll": self._scroll,
-            "close": self._close
+            "close": self._close,
+            "list_tabs": self._list_tabs,
+            "switch_tab": self._switch_tab,
         }
         
         handler = actions.get(action)
@@ -514,6 +524,13 @@ For CAPTCHA (select all squares with X):
             # 額外等待確保頁面穩定
             self._page.wait_for_timeout(500)
             
+            # === 檢測並自動切換到新 Tab ===
+            pages = self._context.pages
+            if len(pages) > 1 and pages[-1] != self._page:
+                self._page = pages[-1]
+                self._page.bring_to_front()
+                self._page.wait_for_timeout(500)
+            
             # 返回新的觀察
             return self._observe()
             
@@ -634,6 +651,37 @@ For CAPTCHA (select all squares with X):
                 success=False,
                 error=f"Scroll failed: {str(e)}"
             )
+    
+    
+    def _list_tabs(self, **_) -> ToolResult:
+        """列出所有分頁"""
+        if self._context is None:
+            return ToolResult(success=False, error="No browser open")
+        
+        pages = self._context.pages
+        tabs = []
+        for i, page in enumerate(pages):
+            tabs.append({
+                "index": i,
+                "title": page.title(),
+                "url": page.url,
+                "active": page == self._page
+            })
+        return ToolResult(success=True, data={"tabs": tabs, "count": len(tabs)})
+
+    def _switch_tab(self, tab_index: int = None, **_) -> ToolResult:
+        """切換到指定分頁"""
+        if tab_index is None:
+            return ToolResult(success=False, error="tab_index required")
+        
+        pages = self._context.pages
+        if not (0 <= tab_index < len(pages)):
+            return ToolResult(success=False, error=f"Invalid tab_index. Available: 0-{len(pages)-1}")
+        
+        self._page = pages[tab_index]
+        self._page.bring_to_front()
+        self._page.wait_for_timeout(300)
+        return self._observe()
     
     # === 擬人化輔助方法 ===
     

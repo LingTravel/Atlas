@@ -347,7 +347,13 @@ async def execute_tool(brain: Brain, name: str, args: dict) -> dict:
 
 async def run_heartbeat(brain: Brain) -> dict:
     """
-    執行一次心跳（異步）
+    執行一次心跳（簡化版）
+    
+    每個 turn：
+    1. 一次 API 調用（思考 + 行動）
+    2. 執行工具
+    3. 結果加入上下文
+    4. 重複
     
     Returns:
         心跳報告
@@ -388,9 +394,10 @@ async def run_heartbeat(brain: Brain) -> dict:
     
     while not done and turn < max_turns:
         turn += 1
+        print(f"\n--- Turn {turn} ---")
         
         try:
-            # 調用 Gemini
+            # === 單次 API 調用 ===
             response = brain.llm.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=conversation,
@@ -402,12 +409,16 @@ async def run_heartbeat(brain: Brain) -> dict:
                 print("[Warning] Empty response from model")
                 break
             
+            # 收集這次回應的所有 parts
+            model_parts = []
+            
             for part in response.candidates[0].content.parts:
-                # 文字回應
+                # === 文字回應 ===
                 if hasattr(part, 'text') and part.text:
                     print(f"\n[Atlas]: {part.text}")
+                    model_parts.append({"text": part.text})
                 
-                # 工具調用
+                # === 工具調用 ===
                 if hasattr(part, 'function_call') and part.function_call:
                     fc = part.function_call
                     tool_name = fc.name
@@ -416,7 +427,10 @@ async def run_heartbeat(brain: Brain) -> dict:
                     print(f"\n[Tool]: {tool_name}")
                     print(f"[Args]: {tool_args}")
                     
-                    # === 異步執行工具 ===
+                    # 加入 function_call 到 model_parts
+                    model_parts.append({"function_call": fc})
+                    
+                    # === 執行工具 ===
                     result = await execute_tool(brain, tool_name, tool_args)
                     
                     # 檢查是否結束
@@ -427,14 +441,16 @@ async def run_heartbeat(brain: Brain) -> dict:
                     # 處理視覺數據
                     result_str = str(result)[:500]
 
-                    # 如果有圖像數據，注入到對話
+                    # === 處理圖像結果 ===
                     if result.get("has_image") or result.get("metadata", {}).get("has_image"):
                         image_data = result.get("data", {}).get("screenshot") or result.get("data", {}).get("image_base64")
                         if image_data:
+                            # 先加入 model 的回應
                             conversation.append({
                                 "role": "model",
-                                "parts": [{"function_call": fc}]
+                                "parts": model_parts
                             })
+                            model_parts = []  # 清空，避免重複加入
                             
                             elements = result.get("data", {}).get("elements", [])
                             elements_hint = ""
@@ -446,6 +462,7 @@ async def run_heartbeat(brain: Brain) -> dict:
                                 if len(elements) > 15:
                                     elements_hint += f"  ... and {len(elements) - 15} more elements\n"
                             
+                            # 加入視覺結果
                             conversation.append({
                                 "role": "user",
                                 "parts": [
@@ -456,18 +473,15 @@ async def run_heartbeat(brain: Brain) -> dict:
                                         }
                                     },
                                     {
-                                        "text": f"""[VISUAL INPUT] I am SEEING this webpage as a screenshot.
+                                        "text": f"""[VISUAL RESULT] Here's what I see after my action:
+
+Page: {result.get('data', {}).get('title', 'Unknown')}
+URL: {result.get('data', {}).get('url', 'Unknown')}
 
 Yellow numbered labels [0], [1], [2]... mark clickable elements.
-
-TO INTERACT:
-✅ browse(action='click', label_id=N) — Click element [N]
-✅ browse(action='type', text='...', submit=True) — Type and submit
-❌ click(label_id=N) — This tool does NOT exist!
-
 {elements_hint}
 
-I must look at the IMAGE to find the right label number."""
+What should I do next?"""
                                     }
                                 ]
                             })
@@ -480,8 +494,9 @@ I must look at the IMAGE to find the right label number."""
                                 "result": f"Visual: {result.get('data', {}).get('title', 'page')} ({len(elements)} elements)"
                             })
                             
-                            continue
+                            continue  # 跳到下一個 turn
                     
+                    # === 處理非視覺結果 ===
                     print(f"[Result]: {result_str}...")
                     
                     actions_log.append({
@@ -490,10 +505,15 @@ I must look at the IMAGE to find the right label number."""
                         "result": result_str
                     })
                     
-                    conversation.append({
-                        "role": "model",
-                        "parts": [{"function_call": fc}]
-                    })
+                    # 加入 model 回應（包含文字和 function_call）
+                    if model_parts:
+                        conversation.append({
+                            "role": "model",
+                            "parts": model_parts
+                        })
+                        model_parts = []
+                    
+                    # 加入工具結果
                     conversation.append({
                         "role": "user",
                         "parts": [{
@@ -503,6 +523,13 @@ I must look at the IMAGE to find the right label number."""
                             }
                         }]
                     })
+            
+            # 如果只有文字沒有工具調用，也要加入對話歷史
+            if model_parts and not any("function_call" in p for p in model_parts):
+                conversation.append({
+                    "role": "model",
+                    "parts": model_parts
+                })
         
         except Exception as e:
             error_msg = str(e)
@@ -510,16 +537,38 @@ I must look at the IMAGE to find the right label number."""
             
             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
                 print("[Waiting 60s due to rate limit...]")
-                await asyncio.sleep(60)  # 異步等待
+                await asyncio.sleep(60)
                 continue
             else:
                 print("[Ending heartbeat due to error]")
                 break
     
-    # === 調試：迴圈結束原因 ===
-    print(f"\n[Debug] Loop ended: done={done}, turn={turn}, max_turns={max_turns}")
-    print(f"[Debug] thoughts = '{thoughts[:100] if thoughts else '(empty)'}'")
-    print(f"[Debug] actions = {len(actions_log)}")
+    # === 如果沒有正常結束，強制反思 ===
+    if not done and turn >= max_turns:
+        print(f"\n⚠️ Reached turn limit. Forcing done...")
+        
+        # 簡單地加一個總結
+        thoughts = f"Reached turn limit after {len(actions_log)} actions."
+        
+        # 嘗試讓 Atlas 總結
+        try:
+            summary_response = brain.llm.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=conversation + [{
+                    "role": "user",
+                    "parts": [{"text": "Turn limit reached. Briefly summarize what you accomplished and call done()."}]
+                }],
+                config=config
+            )
+            
+            if summary_response.candidates and summary_response.candidates[0].content.parts:
+                for part in summary_response.candidates[0].content.parts:
+                    if hasattr(part, 'function_call') and part.function_call.name == "done":
+                        result = await execute_tool(brain, "done", dict(part.function_call.args))
+                        thoughts = result.get("thoughts", thoughts)
+                        break
+        except:
+            pass
     
     # 存入工作記憶
     brain.memory.add_heartbeat(
