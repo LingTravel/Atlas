@@ -62,17 +62,20 @@ class MemoryManager:
         self,
         data_path: Path = None,
         event_bus: EventBus = None,
-        homeostasis = None  # 新增
+        homeostasis = None  # 新增：用於計算情緒權重
     ):
         self._data_path = data_path or Path("data")
         self._events = event_bus
         self._homeostasis = homeostasis  # 新增
         
-        # 初始化三種記憶
+        # === 追蹤情緒變化（用於計算衝擊）===
+        self._last_drive_snapshot = None  # 新增
+        
+        # 初始化三種記憶（Working 傳入回調）
         self.working = WorkingMemory(
             storage_path=self._data_path / "working_memory.json",
             event_bus=event_bus,
-            on_expire=self._handle_memory_expire  # 新增：傳入回調
+            on_expire=self._on_memory_expire  # 新增
         )
         
         self.episodic = EpisodicMemory(
@@ -200,3 +203,145 @@ class MemoryManager:
         self.working.clear()
         self.episodic.clear()
         self.semantic.clear()
+        
+    def snapshot_drives(self):
+        """
+        記錄當前驅動力狀態（每個心跳開始時調用）
+        用於計算情緒衝擊
+        """
+        if self._homeostasis:
+            self._last_drive_snapshot = {
+                name: drive.value 
+                for name, drive in self._homeostasis.drives.items()
+            }
+            
+    def _on_memory_expire(self, memory: dict):
+        """
+        工作記憶過期時的處理（海馬迴機制）
+        
+        決定是否將記憶轉移到 Episodic
+        """
+        # 計算內容重要性（基礎分）
+        content_importance = self._calculate_content_importance(memory)
+        
+        # 計算情緒衝擊（Gemini 的建議！）
+        emotional_impact = self._calculate_emotional_impact()
+        
+        # 綜合分數
+        total_score = content_importance + emotional_impact * 0.5
+        
+        # 決定去向
+        if total_score >= 0.7:
+            # 高分：完整存入 Episodic
+            self._transfer_to_episodic(memory, importance=8)
+            print(f"    💾 Memory HB{memory.get('heartbeat')} → Episodic (score={total_score:.2f})")
+        
+        elif total_score >= 0.4:
+            # 中等：壓縮後存入
+            compressed = self._compress_memory(memory)
+            self._transfer_to_episodic(compressed, importance=5)
+            print(f"    📦 Memory HB{memory.get('heartbeat')} → Episodic (compressed)")
+        
+        else:
+            # 低分：遺忘（但可以記錄到日誌）
+            print(f"    💨 Memory HB{memory.get('heartbeat')} forgotten (score={total_score:.2f})")
+
+
+    def _calculate_content_importance(self, memory: dict) -> float:
+        """
+        計算記憶內容的重要性 (0.0 - 1.0)
+        """
+        score = 0.0
+        
+        thoughts = memory.get("thoughts", "")
+        actions = memory.get("actions", [])
+        summary = memory.get("summary", "")
+        
+        # 有思考內容
+        if thoughts:
+            score += 0.2
+            # 思考內容豐富
+            if len(thoughts) > 100:
+                score += 0.1
+        
+        # 有執行動作
+        if actions:
+            score += 0.2
+            # 多個動作
+            if len(actions) >= 3:
+                score += 0.1
+        
+        # 有摘要
+        if summary:
+            score += 0.2
+        
+        # 關鍵字檢測
+        important_keywords = ["error", "success", "learned", "discovered", "important", "remember"]
+        text = f"{thoughts} {summary}".lower()
+        for keyword in important_keywords:
+            if keyword in text:
+                score += 0.1
+                break
+        
+        return min(1.0, score)
+
+
+    def _calculate_emotional_impact(self) -> float:
+        """
+        計算情緒衝擊 (0.0 - 1.0)
+        
+        基於驅動力的變化幅度
+        """
+        if not self._homeostasis or not self._last_drive_snapshot:
+            return 0.0
+        
+        total_delta = 0.0
+        
+        for name, drive in self._homeostasis.drives.items():
+            old_value = self._last_drive_snapshot.get(name, drive.value)
+            delta = abs(drive.value - old_value)
+            
+            # 某些驅動力的變化更重要
+            if name == "satisfaction":
+                delta *= 1.5  # 滿意度變化權重更高
+            elif name == "anxiety":
+                delta *= 1.3  # 焦慮變化也重要
+            
+            total_delta += delta
+        
+        # 正規化（4 個驅動力，每個最大變化 1.0）
+        normalized = total_delta / 4.0
+        
+        return min(1.0, normalized * 2)  # 放大效果
+
+
+    def _compress_memory(self, memory: dict) -> dict:
+        """
+        壓縮記憶（只保留關鍵資訊）
+        """
+        return {
+            "heartbeat": memory.get("heartbeat"),
+            "timestamp": memory.get("timestamp"),
+            "summary": memory.get("summary") or memory.get("thoughts", "")[:100],
+            "action_count": len(memory.get("actions", [])),
+            "compressed": True
+        }
+
+
+    def _transfer_to_episodic(self, memory: dict, importance: int):
+        """
+        將記憶轉移到 Episodic
+        """
+        event = memory.get("summary") or memory.get("thoughts", "No description")
+        
+        self.episodic.store(
+            event=f"[HB{memory.get('heartbeat')}] {event}",
+            context={
+                "heartbeat": memory.get("heartbeat"),
+                "action_count": memory.get("action_count", len(memory.get("actions", []))),
+                "compressed": memory.get("compressed", False)
+            },
+            outcome="",
+            importance=importance,
+            tags=["auto_consolidated"]
+        )

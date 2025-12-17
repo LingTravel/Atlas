@@ -360,6 +360,9 @@ async def run_heartbeat(brain: Brain) -> dict:
     """
     # 記錄心跳
     hb_num = brain.state.heartbeat()
+
+    # === 新增：快照當前驅動力狀態 ===
+    brain.memory.snapshot_drives()
     
     print("\n" + "="*60)
     print(f"💓 HEARTBEAT {hb_num}")

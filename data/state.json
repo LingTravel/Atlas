@@ -1,0 +1,24 @@
+{
+  "identity": {
+    "name": "Atlas",
+    "created_at": "2025-12-17T18:47:33.034940",
+    "created_by": "NotLing",
+    "version": "2.0"
+  },
+  "lifecycle": {
+    "total_heartbeats": 7,
+    "total_dreams": 0,
+    "session_start": "2025-12-17T18:47:33.034940",
+    "last_heartbeat": "2025-12-17T18:53:19.007018"
+  },
+  "current": {
+    "mode": "working",
+    "task": "Refine poem on Kupka using more nuanced color theory perspectives.",
+    "goal": "Express myself creatively.",
+    "focus": null
+  },
+  "flags": {
+    "first_boot": false,
+    "inherited_message_read": true
+  }
+}

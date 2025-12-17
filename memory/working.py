@@ -28,14 +28,15 @@ class WorkingMemory:
         self,
         capacity: int = 5,
         storage_path: Path = None,
-        event_bus: EventBus = None
+        event_bus: EventBus = None,
+        on_expire: callable = None  # 新增：過期回調
     ):
         self._capacity = capacity
         self._storage_path = storage_path or Path("data/working_memory.json")
         self._events = event_bus
+        self._on_expire = on_expire  # 新增
         self._memory: deque = deque(maxlen=capacity)
         
-        # 已讀文件追蹤：{path: read_count}
         self._files_read: dict[str, int] = {}
         
         self._load()
@@ -49,13 +50,12 @@ class WorkingMemory:
     ):
         """
         添加一個心跳的記錄
-        
-        Args:
-            heartbeat: 心跳編號
-            thoughts: Atlas 的想法
-            actions: 執行的動作列表
-            summary: 心跳摘要
         """
+        # === 新增：檢查是否會擠掉舊記憶 ===
+        if len(self._memory) >= self._capacity and self._on_expire:
+            expiring = self._memory[0]  # 即將被擠掉的
+            self._on_expire(expiring)
+        
         entry = {
             "heartbeat": heartbeat,
             "timestamp": datetime.now().isoformat(),

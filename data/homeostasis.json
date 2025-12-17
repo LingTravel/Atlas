@@ -1,0 +1,107 @@
+{
+  "drives": {
+    "curiosity": {
+      "value": 0.3157451707553799,
+      "baseline": 0.5,
+      "decay_rate": 0.12,
+      "satiation_rate": 0.18
+    },
+    "fatigue": {
+      "value": 0.6057717151585577,
+      "baseline": 0.1,
+      "decay_rate": 0.08,
+      "satiation_rate": 0.1
+    },
+    "anxiety": {
+      "value": 0.13012689609301653,
+      "baseline": 0.2,
+      "decay_rate": 0.15,
+      "satiation_rate": 0.12
+    },
+    "satisfaction": {
+      "value": 0.8093739500080915,
+      "baseline": 0.45,
+      "decay_rate": 0.1,
+      "satiation_rate": 0.15
+    }
+  },
+  "params": {
+    "curiosity_recovery_rate": 0.1,
+    "curiosity_recovery_threshold": 0.35,
+    "fatigue_accumulation": 0.025,
+    "exploration_reward": 0.06,
+    "creation_reward": 0.1,
+    "repeat_penalty": -0.1,
+    "satiation_threshold": 0.75,
+    "inhibition_strength": 0.5
+  },
+  "drive_history": {
+    "curiosity": [
+      0.7296256690176,
+      0.8254885952133895,
+      0.6451636712591129,
+      0.549040271570623,
+      0.44351775948653716,
+      0.43483830341986807,
+      0.28932201641375266
+    ],
+    "fatigue": [
+      0.08,
+      0.21659999999999996,
+      0.4522720000000001,
+      0.5266812160000002,
+      0.5837880827342268,
+      0.6477499010506249,
+      0.6605521778866719
+    ],
+    "anxiety": [
+      0.19,
+      0.14086,
+      0.1696501936,
+      0.12633023823040002,
+      0.13738070249584,
+      0.10328982158202978,
+      0.11779634834472531
+    ],
+    "satisfaction": [
+      0.6491904000000001,
+      0.7178149691138154,
+      0.7685062298348482,
+      0.8554055635604453,
+      0.8685790582237236,
+      0.8964141928768734,
+      0.8805541830171132
+    ]
+  },
+  "adjustments_log": [],
+  "recent_actions": [
+    "browse",
+    "browse",
+    "update_state",
+    "update_state",
+    "write_file",
+    "read_file",
+    "write_file",
+    "browse",
+    "browse",
+    "read_file",
+    "write_file",
+    "update_state",
+    "browse",
+    "browse",
+    "browse",
+    "browse",
+    "write_file",
+    "execute_python",
+    "read_file",
+    "write_file"
+  ],
+  "extreme_counts": {
+    "curiosity": 0,
+    "fatigue": 0,
+    "anxiety": 0,
+    "satisfaction": 0
+  },
+  "ticks": 7,
+  "last_updated": "2025-12-17T18:53:34.424594"
+}

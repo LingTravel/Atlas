@@ -46,16 +46,17 @@ class Brain:
         self.events = EventBus(trace_enabled=True)
         self.state = StateManager(storage_path=root_path / "data" / "state.json")
         
-        # 記憶系統
-        self.memory = MemoryManager(
-            data_path=root_path / "data",
-            event_bus=self.events
-        )
-        
-        # 認知系統
+        # === 先創建 Homeostasis ===
         self.homeostasis = Homeostasis(
             event_bus=self.events,
             storage_path=root_path / "data" / "homeostasis.json"
+        )
+        
+        # === 再創建 Memory（引用 homeostasis）===
+        self.memory = MemoryManager(
+            data_path=root_path / "data",
+            event_bus=self.events,
+            homeostasis=self.homeostasis  # ← 現在 homeostasis 已存在
         )
         
         # Gemini 客戶端
