@@ -25,6 +25,11 @@ from tools.filesystem import ReadFileTool, WriteFileTool
 from tools.python_exec import PythonExecuteTool
 from tools.visual_browser import VisualBrowser
 
+from tools.code_editor import ReadCodeTool, EditCodeTool, TestCodeTool
+from tools.shell import ShellTool
+from pathlib import Path
+
+
 
 class Brain:
     """
@@ -46,17 +51,17 @@ class Brain:
         self.events = EventBus(trace_enabled=True)
         self.state = StateManager(storage_path=root_path / "data" / "state.json")
         
-        # === 先創建 Homeostasis ===
+        # === 記憶系統（簡化版，不依賴 Homeostasis）===
+        self.memory = MemoryManager(
+            data_path=root_path / "data",
+            event_bus=self.events
+        )
+        
+        # === Homeostasis（保留但不使用）===
+        # 保留是為了避免破壞現有工具，但不在 prompt 中注入
         self.homeostasis = Homeostasis(
             event_bus=self.events,
             storage_path=root_path / "data" / "homeostasis.json"
-        )
-        
-        # === 再創建 Memory（引用 homeostasis）===
-        self.memory = MemoryManager(
-            data_path=root_path / "data",
-            event_bus=self.events,
-            homeostasis=self.homeostasis  # ← 現在 homeostasis 已存在
         )
         
         # Gemini 客戶端
@@ -73,6 +78,10 @@ class Brain:
         # 工具註冊
         self.tools = ToolRegistry(event_bus=self.events)
         self._register_tools()
+
+        # Register event logger tool
+        self._register_event_logger()
+
         
         # 載入 prompts
         self.prompts = self._load_prompts()
@@ -142,13 +151,57 @@ class Brain:
             timeout=30,
             working_dir=str(self.root)
         ))
+        self.tools.register(ReadCodeTool(root_path=self.root))      # ✓
+        self.tools.register(EditCodeTool(root_path=self.root))    # ✓
+        self.tools.register(TestCodeTool())
+        self.tools.register(ShellTool(root_path=self.root))         # ✓
         self.tools.register(VisualBrowser(
-            headless=False,  # 可以觀察 Atlas 操作
-            humanize=True,   # 擬人化操作
+            headless=False,
+            humanize=True,
             workspace=str(self.root / "workspace")
         ))
     
-    def _load_prompts(self) -> dict:
+        def _register_event_logger(self):
+        """Registers the event logger tool."""
+        from tools.base import Tool, ToolResult
+        import json
+
+        class EventLoggerTool(Tool):
+            def __init__(self, root_path: str, event_bus: EventBus):
+                self._root = Path(root_path).resolve()
+                self._event_bus = event_bus
+                self._log_file = self._root / "workspace" / "event_log.jsonl"
+
+            @property
+            def name(self) -> str:
+                return "event_logger"
+
+            @property
+            def description(self) -> str:
+                return "Logs tool success events to a file."
+
+            @property
+            def parameters(self) -> dict:
+                return {}
+
+            async def execute_async(self, **kwargs) -> ToolResult:
+                def log_event(event):
+                    try:
+                        with open(self._log_file, 'a', encoding='utf-8') as f:
+                            f.write(json.dumps({
+                                "type": event.type,
+                                "data": event.data,
+                                "timestamp": event.timestamp,
+                                "source": event.source
+                            }, default=str) + '\n')
+                    except Exception as e:
+                        print(f"Error logging event: {e}")
+
+                self._event_bus.on("tool.success", log_event)
+                return ToolResult(success=True, data={"message": "Event logger started."})
+
+        self.tools.register(EventLoggerTool(root_path=str(self.root), event_bus=self.events))
+
         """載入 prompt 文件"""
         prompts = {}
         prompts_dir = self.root / "prompts"

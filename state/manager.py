@@ -116,6 +116,15 @@ class StateManager:
         """獲取標記"""
         return self._flags.get(flag, False)
     
+    def set_last_mood(self, mood: str):
+        """記錄 Atlas 自己說的心情"""
+        self._flags["last_mood"] = mood
+        self._save()
+
+    def get_last_mood(self) -> Optional[str]:
+        """獲取上次的心情"""
+        return self._flags.get("last_mood")
+    
     def is_first_boot(self) -> bool:
         """是否首次啟動"""
         return self._flags.get("first_boot", True)

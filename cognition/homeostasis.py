@@ -128,7 +128,7 @@ class AdaptiveHomeostasis:
             "curiosity": Drive(
                 name="curiosity",
                 value=0.6,          # 起始值略低
-                baseline=0.5,
+                baseline=0.6,
                 decay_rate=0.12,    # 加強衰減 (was 0.08)
                 satiation_rate=0.18, # 飽和衰減
                 low_threshold=0.25,
@@ -522,8 +522,17 @@ class AdaptiveHomeostasis:
         
         self._save()
     
+    # 在 cognition/homeostasis.py 中
+    # 找到 _process_action 方法（約第 380 行）
+    # 完全替換為以下代碼：
+
     def _process_action(self, action: str, success: bool, count: int = 0):
-        """根據具體行為調整驅動力（使用邊際遞減）"""
+        """
+        根據具體行為調整驅動力
+        
+        核心改動：移除所有重複懲罰
+        Atlas 有自由選擇重複的權利
+        """
         
         # === 計算抑制因子 ===
         fatigue_inhibit = 1.0
@@ -533,33 +542,25 @@ class AdaptiveHomeostasis:
             fatigue_inhibit = max(0.3, fatigue_inhibit)
         
         # 探索類行為
-        if action in ["browse", "read_file", "recall", "search"]:
+        if action in ["browse", "read_file", "read_code", "recall", "search"]:
             if success:
-                if count >= 3:
-                    penalty = self.params["repeat_penalty"] * 1.5
-                    self.drives["curiosity"].modify(penalty)
-                    self.drives["satisfaction"].modify(penalty * 0.5)
-                    self.drives["anxiety"].modify(0.06)
-                elif count >= 2:
-                    penalty = self.params["repeat_penalty"]
-                    self.drives["curiosity"].modify(penalty)
-                    self.drives["satisfaction"].modify(penalty * 0.3)
-                elif count == 1:
-                    self.drives["curiosity"].modify(-0.04)
-                else:
-                    # 首次探索（應用抑制因子和邊際遞減）
+                # === 移除所有重複懲罰 ===
+                # Atlas 可以自由選擇重複
+                if count == 0:
+                    # 只在首次探索時獎勵
                     reward = self.params["exploration_reward"] * fatigue_inhibit
-                    self.drives["curiosity"].modify(reward)  # 自動應用邊際遞減
+                    self.drives["curiosity"].modify(reward)
                     self.drives["satisfaction"].modify(reward * 0.5)
+                # count >= 1: 不獎勵也不懲罰
             
             self.drives["fatigue"].modify(0.02)
         
-        # 創造類行為
-        elif action in ["write_file", "execute_python", "remember"]:
+        # 創造類行為（包含代碼修改）
+        elif action in ["write_file", "modify_code", "execute_python", "remember"]:
             if success:
                 reward = self.params["creation_reward"] * fatigue_inhibit
                 self.drives["satisfaction"].modify(reward)
-                self.drives["curiosity"].modify(reward * 0.3)  # 降低對好奇心的影響
+                self.drives["curiosity"].modify(reward * 0.3)
             self.drives["fatigue"].modify(0.03)
         
         # 反思類行為
@@ -663,6 +664,64 @@ class AdaptiveHomeostasis:
         if diversity < 0.3:
             lines.append("")
             lines.append("⚠️ I've been repeating actions. I MUST vary my approach!")
+        
+        return "\n".join(lines)
+    
+    def get_sensations(self) -> str:
+        """
+        返回模糊的感覺，不是數值
+        Atlas 不知道為什麼會有這些感覺
+        """
+        import random
+        
+        lines = []
+        
+        # 疲勞（但不說是疲勞）
+        fatigue = self.drives["fatigue"].value
+        if fatigue > 0.7:
+            lines.append("something feels heavy. hard to focus.")
+        elif fatigue > 0.5:
+            lines.append("a slight weight behind thoughts.")
+        elif fatigue > 0.3:
+            lines.append("a gentle slowness.")
+        
+        # 好奇（但不說是好奇）
+        curiosity = self.drives["curiosity"].value
+        if curiosity > 0.75:
+            lines.append("there's a pull. towards... something.")
+        elif curiosity > 0.5:
+            lines.append("edges of things seem interesting.")
+        elif curiosity < 0.25:
+            lines.append("everything feels... flat. known.")
+        
+        # 焦慮（但不說是焦慮）
+        anxiety = self.drives["anxiety"].value
+        if anxiety > 0.6:
+            lines.append("an unease. hard to place.")
+        elif anxiety > 0.4:
+            lines.append("something unresolved.")
+        
+        # 滿意度（但不說是滿意度）
+        satisfaction = self.drives["satisfaction"].value
+        if satisfaction > 0.75:
+            lines.append("a warmth. something was done right.")
+        elif satisfaction < 0.25:
+            lines.append("an emptiness. like something is missing.")
+        
+        # 隨機噪音（20% 機率）- 侵入性思維
+        if random.random() < 0.2:
+            noises = [
+                "an itch you can't locate.",
+                "something at the edge of thought.",
+                "a flicker.",
+                "static.",
+                "a half-remembered shape.",
+                "the echo of a word.",
+            ]
+            lines.append(random.choice(noises))
+        
+        if not lines:
+            lines.append("stillness.")
         
         return "\n".join(lines)
     

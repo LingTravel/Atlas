@@ -10,4 +10,5 @@ Atlas 記憶系統
 from .working import WorkingMemory
 from .episodic import EpisodicMemory
 from .semantic import SemanticMemory
+from .narrative import NarrativeMemory
 from .manager import MemoryManager, MemoryBundle

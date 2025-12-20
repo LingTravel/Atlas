@@ -1,0 +1,5 @@
+google-genai
+chromadb
+playwright
+mcp
+pyyaml
